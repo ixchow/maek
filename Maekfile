@@ -1,0 +1,17 @@
+WINDOWS:
+	CPP(X) = cl.exe
+	LINK = link.exe
+
+MACOS:
+	CPP = clang++
+	LINK = clang++
+
+LINUX:
+	CPP = g++
+	LINK = g++
+
+dist/game : game.o
+	LINK($<, $@)
+
+objs/%.o : %.cpp `DEPENDS(%.cpp)`
+	CPP($<, $@)
