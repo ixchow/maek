@@ -54,6 +54,8 @@ maek.update(targets);
 //...which means it's not actually done here.
 // (but node will wait until the function is done to exit)
 
+
+
 //--------------------------------------------------------
 //Now, onward to the code that makes all this work:
 //  (edit this if you need to support new compilers or noodle with flags)
@@ -89,6 +91,7 @@ function init_maek() {
 			process.exit(1);
 		}
 	})();
+	maek.OS = OS;
 
 	const JOBS = require('os').cpus().length + 1;
 
@@ -100,6 +103,8 @@ function init_maek() {
 		objSuffix:(OS === 'windows' ? '.obj' : '.o'), //suffix for object files
 		exeSuffix:(OS === 'windows' ? '.exe' : ''), //suffix for executable files
 		depends:[], //extra dependencies; generally only set locally
+		CPPFlags:[], //extra flags for c++ compiler
+		LINKLibs:[], //extra -L and -l flags for linker
 	};
 
 	//any settings here override 'DEFAULT_OPTIONS':
@@ -147,6 +152,10 @@ function init_maek() {
 	//
 	// task.pending is set by updateTargets() to keep track of currently-running task updates.
 
+	//used to avoid re-hashing the same files a whole lot:
+	const hashCache = {};
+	let hashCacheHits = 0;
+
 	//-----------------------------------------
 	//Build rules add tasks to maek.tasks:
 
@@ -165,6 +174,9 @@ function init_maek() {
 			for (const command of recipe) {
 				await runCommand(command, `${task.label} (${step}/${recipe.length})`);
 				step += 1;
+			}
+			for (const target of targets) {
+				delete hashCache[target];
 			}
 		};
 
@@ -208,11 +220,11 @@ function init_maek() {
 
 		let cc, depsCommand, objCommand;
 		if (OS === 'linux') {
-			cc = ['g++', '-std=c++20', '-Wall', '-Werror', '-g'];
+			cc = ['g++', '-std=c++20', '-Wall', '-Werror', '-g', ...options.CPPFlags];
 			depsCommand = [...cc, '-E', '-M', '-MG', '-MT', 'x ', '-MF', depsFile, cppFile];
 			objCommand = [...cc, '-c', '-o', objFile, cppFile];
 		} else if (OS === 'macos') {
-			cc = ['clang++', '-std=c++20', '-Wall', '-Werror', '-g'];
+			cc = ['clang++', '-std=c++20', '-Wall', '-Werror', '-g', ...options.CPPFlags];
 			depsCommand = [...cc, '-E', '-M', '-MG', '-MT', 'x ', '-MF', depsFile, cppFile];
 			objCommand = [...cc, '-c', '-o', objFile, cppFile];
 		} else {
@@ -274,9 +286,11 @@ function init_maek() {
 			//first, wait for any explicit prerequisites to build:
 			await updateTargets(depends, `${task.label}`);
 			//make object file:
+			delete hashCache[objFile];
 			await fsPromises.mkdir(path.dirname(objFile), {recursive:true});
 			await runCommand(objCommand, `${task.label}: compile`);
 			//make dependencies file: (NOTE: could do with same compile line)
+			delete hashCache[depsFile];
 			await fsPromises.mkdir(path.dirname(depsFile), {recursive:true});
 			await runCommand(depsCommand,`${task.label}: prerequisites`);
 			//read extra dependencies and make sure they aren't targets of other rules:
@@ -316,10 +330,10 @@ function init_maek() {
 		let link, linkCommand;
 		if (OS === 'linux') {
 			link = ['g++', '-std=c++20', '-Wall', '-Werror', '-g'];
-			linkCommand = [...link, '-o', exeFile, ...objFiles];
+			linkCommand = [...link, '-o', exeFile, ...objFiles, ...options.LINKLibs];
 		} else if (OS === 'macos') {
 			link = ['g++', '-std=c++20', '-Wall', '-Werror', '-g'];
-			linkCommand = [...link, '-o', exeFile, ...objFiles];
+			linkCommand = [...link, '-o', exeFile, ...objFiles, ...options.LINKLibs];
 		} else {
 			throw new Error(`TODO: write LINK rule for ${OS}.`);
 		}
@@ -330,6 +344,7 @@ function init_maek() {
 			await updateTargets(depends, `${task.label}`);
 
 			//then link:
+			delete hashCache[exeFile];
 			await fsPromises.mkdir(path.dirname(exeFile), {recursive:true});
 			await runCommand(linkCommand, `${task.label}: link`);
 		};
@@ -374,7 +389,7 @@ function init_maek() {
 							if ('cachedKey' in task && 'keyFn' in task) {
 								const key = await task.keyFn();
 								if (JSON.stringify(key) === JSON.stringify(task.cachedKey)) {
-									console.log(`${task.label}: already in cache.`);
+									//TODO: VERBOSE: console.log(`${task.label}: already in cache.`);
 									return;
 								}
 							}
@@ -512,12 +527,16 @@ function init_maek() {
 		const files = targets.filter(target => target[0] !== ':');
 
 		//helper that will hash a single file: (non-existent files get special hash 'x')
-		function hashFile(file) {
+		async function hashFile(file) {
 			//TODO: consider a hash cache!
+			if (file in hashCache) {
+				hashCacheHits += 1;
+				return hashCache[file];
+			}
 
 			//would likely be more efficient to use a pipe with large files,
 			//but this code is a bit more readable:
-			return new Promise((resolve, reject) => {
+			const hash = await new Promise((resolve, reject) => {
 				fs.readFile(file, (err, data) => {
 					if (err) {
 						//if failed to read file, report hash as 'x':
@@ -530,6 +549,9 @@ function init_maek() {
 					}
 				});
 			});
+
+			hashCache[file] = hash;
+			return hash;
 		}
 
 		//get all hashes:
@@ -590,6 +612,8 @@ function init_maek() {
 		}
 		console.log(`Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
 		fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), {encoding:'utf8'});
+
+		console.log(`hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
 
 	};
 
