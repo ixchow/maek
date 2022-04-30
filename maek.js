@@ -454,7 +454,7 @@ function make_build() {
 			}
 		}
 		console.log(`Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
-		await fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), {encoding:'utf8'});
+		fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), {encoding:'utf8'});
 
 	};
 
