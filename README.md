@@ -2,7 +2,7 @@
 
 **Maek** is like **make**, but a bit mixed up.
 
-**Maek** is a lightweight, build system as a single javascript file. It is:
+**Maek** is a lightweight build system as a single javascript file. It is:
  - *Transparent*: everything is in one file and uses only standard node modules. You control exactly what maek does. No spooky action-at-a-distance or system package databases.
  - *Explicit*: prints the commands it runs and tells you why it runs them.
  - *Parallel*: runs many jobs at once.
