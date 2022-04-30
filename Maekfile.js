@@ -528,7 +528,6 @@ function init_maek() {
 
 		//helper that will hash a single file: (non-existent files get special hash 'x')
 		async function hashFile(file) {
-			//TODO: consider a hash cache!
 			if (file in hashCache) {
 				hashCacheHits += 1;
 				return hashCache[file];
