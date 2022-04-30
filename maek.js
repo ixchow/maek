@@ -460,7 +460,3 @@ function make_build() {
 
 	return build;
 }
-
-//-------------------------------------------------
-//helper functions used by the various build rules:
-
