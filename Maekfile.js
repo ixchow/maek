@@ -189,7 +189,7 @@ function init_maek() {
 				];
 			};
 		}
-		task.label = `RULE '${prerequisites.join("', '")}' -> '${targets.join("', '")}'`;
+		task.label = `RULE ${targets[0]}`;
 
 		for (const target of targets) {
 			maek.tasks[target] = task;
@@ -311,7 +311,7 @@ function init_maek() {
 			];
 		};
 
-		task.label = `CPP '${depends.join("', '")}' -> '${objFile}'`;
+		task.label = `CPP ${objFile}`;
 
 		maek.tasks[objFile] = task;
 
@@ -357,7 +357,7 @@ function init_maek() {
 			];
 		};
 
-		task.label = `LINK '${depends.join("', '")}' -> '${exeFile}'`;
+		task.label = `LINK ${exeFile}`;
 
 		maek.tasks[exeFile] = task;
 
@@ -401,8 +401,8 @@ function init_maek() {
 							}
 						} catch (e) {
 							if (e instanceof BuildError) {
-								console.error(`FAILED: ${task.label} (requested by ${from}): ${e.message}`);
-								throw new BuildError(`prerequisite failed.`);
+								console.error(`!!! FAILED [${task.label}] ${e.message}`);
+								task.failed = true;
 							} else {
 								throw e;
 							}
@@ -425,6 +425,15 @@ function init_maek() {
 
 		//resolve all the build/check tasks before returning:
 		await Promise.all(pending);
+
+		//check for any build failures:
+		for (const target of targets) {
+			if (target in maek.tasks) {
+				if (maek.tasks[target].failed) {
+					throw new BuildError(`for lack of ${target}`);
+				}
+			}
+		}
 	}
 
 	//'job' says the contained function is an async job that should count against the JOBS limit:
@@ -464,7 +473,7 @@ function init_maek() {
 	async function runCommand(command, message) {
 		await job(async () => {
 			if (typeof message !== 'undefined') {
-				console.log(message);
+				console.log('\x1b[90m' + message + '\x1b[0m');
 			}
 
 			//print a command in a way that can be copied to a shell to run:
@@ -480,7 +489,7 @@ function init_maek() {
 					prettyCommand += token;
 				}
 			}
-			console.log('   ' + prettyCommand);
+			//console.log('   ' + prettyCommand);
 
 			//actually run the command:
 			const child_process = require('child_process');
@@ -493,13 +502,14 @@ function init_maek() {
 				});
 				proc.on('exit', (code, signal) => {
 					if (code !== 0) {
-						reject(new BuildError(`command exited with code ${code}.\n  ${prettyCommand}`));
+						process.stderr.write(`\n`);
+						reject(new BuildError(`exit ${code} from:\n    \x1b[31m${prettyCommand}\x1b[0m\n`));
 					} else {
 						resolve();
 					}
 				});
 				proc.on('error', (err) => {
-					reject(new BuildError(`command error (${err.message}).\n  ${prettyCommand}`));
+					reject(new BuildError(`${err.message} from:\n    ${prettyCommand}`));
 				});
 			});
 		});
@@ -561,7 +571,7 @@ function init_maek() {
 	//Public Interface:
 
 	maek.update = async (targets) => {
-		console.log(`Maek v0.0 on ${OS} with ${JOBS} max jobs updating '${targets.join("', '")}'...`);
+		console.log(` -- Maek v0.1 on ${OS} with ${JOBS} max jobs updating '${targets.join("', '")}'...`);
 
 		//clean up any stale cachedKey values:
 		for (const target of Object.keys(maek.tasks)) {
@@ -580,21 +590,23 @@ function init_maek() {
 					removed += 1;
 				}
 			}
-			console.log(`   Loaded cache from '${CACHE_FILE}'; assigned ${assigned} targets and removed ${removed} stale entries.`);
+			console.log(` -- Loaded cache from '${CACHE_FILE}'; assigned ${assigned} targets and removed ${removed} stale entries.`);
 		} catch (e) {
-			console.log(`   No cache loaded; starting fresh.`);
+			console.log(` --  No cache loaded; starting fresh.`);
 			if (e.code !== 'ENOENT') {
 				console.warn(`By the way, the reason the loading failed was the following unexpected error:`,e);
 			}
 		}
 
 		//actually do the build:
+		let failed = false;
 		try {
 			await updateTargets(targets, 'user');
+			console.log(` -- SUCCESS: Targets are now up to date.`);
 		} catch (e) {
 			if (e instanceof BuildError) {
-				console.error(`FAILED: ${e.message}`);
-				process.exit(1);
+				console.error(` -- FAILED: ${e.message}`);
+				process.exitCode = 1;
 			} else {
 				throw e;
 			}
@@ -609,11 +621,10 @@ function init_maek() {
 				stored += 1;
 			}
 		}
-		console.log(`Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
+		console.log(` -- Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
 		fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), {encoding:'utf8'});
-
-		console.log(`hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
-
+	
+		console.log(` -- hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
 	};
 
 	return maek;
