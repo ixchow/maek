@@ -6,7 +6,7 @@
 //   -- you can see the definition of init_build by scrolling down.)
 const maek = init_maek();
 
-//call rules on the build object to specify tasks.
+//call rules on the maek object to specify tasks.
 // rules generally look like:
 //  output = maek.RULE_NAME(input [, output] [, {options}])
 
@@ -244,36 +244,18 @@ function init_maek() {
 				return [];
 			}
 
-			let tokens = [''];
-			//split text into tokens (and undo any escaping):
-			for (let i = 0; i < text.length; ++i) {
-				if (text[i] === ' ' || text[i] === '\t' || text[i] === '\n') {
-					//whitespace starts a new token:
-					if (tokens[tokens.length-1] !== '') {
-						tokens.push('');
-					}
-				} else if (text[i] === '$' && text[i+1] === '$') {
-					//'$$' -> '$'
-					tokens[tokens.length-1] += '$';
-					++i;
-				} else if (text[i] === '\\' && i+1 < text.length) {
-					if (text[i+1] === '\n') {
-						//ignore, the \n will be correctly treated as whitespace by next loop.
-					} else {
-						//add to token even if it's whitespace:
-						++i;
-						tokens[tokens.length-1] += text[i];
-					}
-				} else {
-					tokens[tokens.length-1] += text[i];
-				}
-			}
-			if (tokens[tokens.length-1] === '') tokens.pop();
+			//parse the makefile-style "targets : prerequisites" line from the file into a list of tokens:
+			let tokens = text
+				.replace(/\\?\n/g, ' ') //escaped newline (or regular newline) => whitespace
+				.trim() //remove leading and trailing whitespace
+				.replace(/([^\\])\s+/g, '$1\n') //run of non-escaped whitespace => single newline
+				.split('\n'); //split on single newlines
 
+			//becaue of the `-MT 'x '` option, expect 'x :' at the start of the rule:
 			console.assert(tokens[0] === 'x');
 			console.assert(tokens[1] === ':');
-
-			tokens = tokens.slice(2).sort();
+			tokens = tokens.slice(2); //remove the 'x :'
+			tokens = tokens.sort(); //sort for consistency
 
 			//NOTE: might want to do some path normalization here!
 			const extraDepends = tokens.filter(target => !(target in inDepends));
@@ -440,7 +422,7 @@ function init_maek() {
 	// returns a promise that resolves to the result of jobFn() (or rejects if jobFn() throws)
 	// will always wait until at least the next tick to run jobFn()
 	function job(jobFn) {
-		//keep list of active and pending jobs:
+		//keep count of active jobs and list of pending jobs:
 		if (!('active' in job)) job.active = 0;
 		if (!('pending' in job)) job.pending = [];
 
@@ -531,7 +513,6 @@ function init_maek() {
 	//return a ['file:base64hash', 'file2:whateverHash', 'file3:etcstuff'] array,
 	// representing the contents of a list of targets (with ':abstract' targets removed)
 	async function hashFiles(targets) {
-		const fs = require('fs');
 		const crypto = require('crypto');
 
 		const files = targets.filter(target => target[0] !== ':');
