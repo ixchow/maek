@@ -1,14 +1,38 @@
 //Run this (javascript) file with node:
-//$ node maek.js [target1] [target2] [...]
+//$ node Maekfile.js [-jN] [-v] [-q] [--] [target1] [target2] [...]
+//
+// Maekfile.js will [re-]build all the specified targets.
+// Results are re-used by content hash if they match "maek-cache.json"; delete that file to force a full rebuild.
+//
+//Command line options:
+//  -jN      limit on parallel jobs; defaults to number of cpu cores + 1
+//  -v       verbose output; prints more info
+//  -q       quit on first error
+//  --       optional separator between command line switches and targets (useful if you have a target named '-j1')
+//  targetN  target name. Posix-style path to a file to build, or an abstract target (word starting with ':')
+//
 
-//set up the build:
-// (it's a quirk of javascript that function definitions anywhere in scope get 'hoisted'
-//   -- you can see the definition of init_build by scrolling down.)
+//maek is configured using properties and methods of the `maek` object:
 const maek = init_maek();
+// (it's a quirk of javascript that function definitions anywhere in scope get 'hoisted'
+//   -- you can see the definition of init_maek by scrolling down.)
+
+//-------------------------------------------------------------------
+//Read onward to discover how to configure Maek for your build!
+
+//set default targets to build (can be overridden by command line options):
+maek.TARGETS = ["dist/game" + (maek.OS === "windows" ? ".exe" : "")];
 
 //call rules on the maek object to specify tasks.
 // rules generally look like:
 //  output = maek.RULE_NAME(input [, output] [, {options}])
+
+//use CHECK to print a message when something is missing
+//'[targets =] CHECK(targets, prerequisites, message)'
+// targets: array of targets the task produces (can include both files and ':abstract targets')
+// prerequisites: array of things that must exist before manual task message is printed
+// message: message to print if targets don't exist
+//returns targets: the targets the rule produces
 
 //the '[objFile =] CPP(cppFile [, objFileBase] [, options])' compiles a c++ file:
 // cppFile: name of c++ file to compile
@@ -38,27 +62,11 @@ maek.RULE([':test'], [test_exe], [
 //Note that tasks that produce ':abstract targets' are never cached.
 // This is similar to how .PHONY targets behave in make.
 
-// - - - - - - - - - - - - - - - - - - - - - - - - -
-//Now that the tasks are specified, decide which targets to build:
-
-//by default, build the ':dist' abstract target:
-let targets = [':dist'];
-
-//but if anything is on the command line, build that instead:
-if (process.argv.length > 2) {
-	targets = process.argv.slice(2);
-}
-
-//note: this is an async function...
-maek.update(targets);
-//...which means it's not actually done here.
-// (but node will wait until the function is done to exit)
 
 
-
-//--------------------------------------------------------
+//==========================================================================
 //Now, onward to the code that makes all this work:
-//  (edit this if you need to support new compilers or noodle with flags)
+//  (edit this if you need to support new compilers)
 
 function init_maek() {
 	//standard libraries:
@@ -81,11 +89,11 @@ function init_maek() {
 	const CACHE_FILE = 'maek-cache.json';
 
 	//current OS: (with slightly nicer naming than os.platform()
-	const OS = (()=>{
+	const OS = (() => {
 		const platform = require('os').platform();
-		if      (platform === 'win32' ) return 'windows';
+		if (platform === 'win32') return 'windows';
 		else if (platform === 'darwin') return 'macos';
-		else if (platform === 'linux' ) return 'linux';
+		else if (platform === 'linux') return 'linux';
 		else {
 			console.error(`ERROR: Unrecognized platform ${os.platform()}.`);
 			process.exit(1);
@@ -93,19 +101,46 @@ function init_maek() {
 	})();
 	maek.OS = OS;
 
-	const JOBS = require('os').cpus().length + 1;
+	//-----------------------------------------
+	//Command line defaults:
+
+	//maximum number of jobs to run: (change with -jN)
+	maek.JOBS = require('os').cpus().length + 1;
+
+	//targets to build by default: (change by passing target names)
+	maek.TARGETS = [];
+
+	//print extra info: (set by passing -v)
+	maek.VERBOSE = false;
+
+	//quit on first failure: (set by passing -q)
+	maek.QUIT_EAGERLY = false;
 
 	//-----------------------------------------
 	//options: set to change maek rule behavior
 
 	const DEFAULT_OPTIONS = {
-		objPrefix:'objs/', //prefix for object file paths (if not explicitly specified)
-		objSuffix:(OS === 'windows' ? '.obj' : '.o'), //suffix for object files
-		exeSuffix:(OS === 'windows' ? '.exe' : ''), //suffix for executable files
-		depends:[], //extra dependencies; generally only set locally
-		CPPFlags:[], //extra flags for c++ compiler
-		LINKLibs:[], //extra -L and -l flags for linker
-	};
+		objPrefix: 'objs/', //prefix for object file paths (if not explicitly specified)
+		objSuffix: (OS === 'windows' ? '.obj' : '.o'), //suffix for object files
+		exeSuffix: (OS === 'windows' ? '.exe' : ''), //suffix for executable files
+		depends: [], //extra dependencies; generally only set locally
+		CPP: [], //the c++ compiler and any flags to start with (set below, per-OS)
+		CPPFlags: [], //extra flags for c++ compiler
+		LINK: [], //the linker and any flags to start with (set below, per-OS)
+		LINKLibs: [], //extra -L and -l flags for linker
+	}
+
+	if (OS === 'windows') {
+		DEFAULT_OPTIONS.CPP = ['cl.exe', '/nologo', '/EHsc', '/Z7', '/std:c++17', '/W4', '/WX', '/MD'];
+		//TODO: could embed manifest to set UTF8 codepage
+		DEFAULT_OPTIONS.LINK = ['link.exe', '/nologo', '/SUBSYSTEM:CONSOLE', '/DEBUG:FASTLINK', '/INCREMENTAL:NO'];
+	} else if (OS === 'linux') {
+		DEFAULT_OPTIONS.CPP = ['g++', '-std=c++17', '-Wall', '-Werror', '-g'];
+		DEFAULT_OPTIONS.LINK = ['g++', '-std=c++17', '-Wall', '-Werror', '-g'];
+	} else if (OS === 'macos') {
+		DEFAULT_OPTIONS.CPP = ['clang++', '-std=c++17', '-Wall', '-Werror', '-g'];
+		DEFAULT_OPTIONS.LINK = ['clang++', '-std=c++17', '-Wall', '-Werror', '-g'];
+	}
 
 	//any settings here override 'DEFAULT_OPTIONS':
 	maek.options = Object.assign({}, DEFAULT_OPTIONS); //shallow copy of DEFAULT_OPTIONS in case you want to console.log(maek.options) to check settings.
@@ -196,6 +231,29 @@ function init_maek() {
 		}
 	};
 
+	//CHECK adds a task that checks targets exist (after prerequisites have been created):
+	// targets (array) are the things that get checked
+	// prerequisites (array) are the things that must be up-to-date before the check is done
+	// message (string) is printed if targets don't exist
+	maek.CHECK = (targets, prerequisites, message = []) => {
+		if (!Array.isArray(targets)) throw new Error("CHECK: targets must be an array.");
+		if (!Array.isArray(prerequisites)) throw new Error("CHECK: prerequisites must be an array.");
+		if (typeof message !== "string") throw new Error("CHECK: message must be a string.");
+
+		const task = async () => {
+			await updateTargets(prerequisites, `${task.label}`);
+			const checks = targets.map(file => fsPromises.access(file, fs.constants.R_OK).catch((e) => { throw new BuildError(`missing '${file}':\n${message}`); }));
+			await Promise.all(checks);
+		};
+
+		task.label = `CHECK ${targets[0]}`;
+
+		for (const target of targets) {
+			maek.tasks[target] = task;
+		}
+	};
+
+
 
 	//maek.CPP makes an object from a c++ source file:
 	// cppFile is the source file name
@@ -206,7 +264,7 @@ function init_maek() {
 
 		//if objFileBase isn't given, compute by trimming extension from cppFile and appending to objPrefix:
 		if (typeof objFileBase === 'undefined') {
-			objFileBase = path.relative('', options.objPrefix + cppFile.replace(/\.[^.]*$/,''));
+			objFileBase = path.relative('', options.objPrefix + cppFile.replace(/\.[^.]*$/, ''));
 		}
 
 		//object file gets os-dependent suffix:
@@ -218,17 +276,16 @@ function init_maek() {
 		//explicit dependencies: (implicit dependencies will be computed later)
 		const depends = [cppFile, ...options.depends];
 
-		let cc, depsCommand, objCommand;
+		let cc, command;
+		cc = [...options.CPP, ...options.CPPFlags];
 		if (OS === 'linux') {
-			cc = ['g++', '-std=c++20', '-Wall', '-Werror', '-g', ...options.CPPFlags];
-			depsCommand = [...cc, '-E', '-M', '-MG', '-MT', 'x ', '-MF', depsFile, cppFile];
-			objCommand = [...cc, '-c', '-o', objFile, cppFile];
+			//TODO: check on linux
+			command = [...cc, '-MD', '-MT', 'x ', '-MF', depsFile, '-c', '-o', objFile, cppFile];
 		} else if (OS === 'macos') {
-			cc = ['clang++', '-std=c++20', '-Wall', '-Werror', '-g', ...options.CPPFlags];
-			depsCommand = [...cc, '-E', '-M', '-MG', '-MT', 'x ', '-MF', depsFile, cppFile];
-			objCommand = [...cc, '-c', '-o', objFile, cppFile];
-		} else {
-			throw new Error(`TODO: write CPP rule for ${OS}.`);
+			//TODO: check on macos
+			command = [...cc, '-MD', '-MT', 'x ', '-MF', depsFile, '-c', '-o', objFile, cppFile];
+		} else { //windows
+			command = [...cc, '/c', `/Fo${objFile}`, '/sourceDependencies', depsFile, '/Tp', cppFile];
 		}
 
 		//will be used by loadDeps to trim explicit dependencies:
@@ -239,28 +296,41 @@ function init_maek() {
 		async function loadDeps() {
 			let text;
 			try {
-				text = await fsPromises.readFile(depsFile, {encoding:'utf8'});
+				text = await fsPromises.readFile(depsFile, { encoding: 'utf8' });
 			} catch (e) {
-				return [];
+				if (e.code === 'ENOENT') {
+					return [];
+				} else {
+					throw e; //FLAGRANT ERROR
+				}
 			}
 
-			//parse the makefile-style "targets : prerequisites" line from the file into a list of tokens:
-			let tokens = text
-				.replace(/\\?\n/g, ' ') //escaped newline (or regular newline) => whitespace
-				.trim() //remove leading and trailing whitespace
-				.replace(/([^\\])\s+/g, '$1\n') //run of non-escaped whitespace => single newline
-				.split('\n'); //split on single newlines
+			if (OS === 'windows') {
+				//parse JSON-encoded dependency info from /sourceDependencies:
+				const winpath = require('path').win32;
+				let paths = JSON.parse(text).Data.Includes;
+				paths = paths.map(path => winpath.relative('', path).split('\\').join('/'));
+				paths = paths.sort();
+				const extraDepends = paths.filter(target => !(target in inDepends));
+				return extraDepends;
+			} else {
+				//parse the makefile-style "targets : prerequisites" line from the file into a list of tokens:
+				let tokens = text
+					.replace(/\\?\n/g, ' ') //escaped newline (or regular newline) => whitespace
+					.trim() //remove leading and trailing whitespace
+					.replace(/([^\\])\s+/g, '$1\n') //run of non-escaped whitespace => single newline
+					.split('\n'); //split on single newlines
 
-			//becaue of the `-MT 'x '` option, expect 'x :' at the start of the rule:
-			console.assert(tokens[0] === 'x');
-			console.assert(tokens[1] === ':');
-			tokens = tokens.slice(2); //remove the 'x :'
-			tokens = tokens.sort(); //sort for consistency
+				//because of the `-MT 'x '` option, expect 'x :' at the start of the rule:
+				console.assert(tokens[0] === 'x');
+				console.assert(tokens[1] === ':');
+				tokens = tokens.slice(2); //remove the 'x :'
+				tokens = tokens.sort(); //sort for consistency
 
-			//NOTE: might want to do some path normalization here!
-			const extraDepends = tokens.filter(target => !(target in inDepends));
-
-			return extraDepends;
+				//NOTE: might want to do some path normalization here!
+				const extraDepends = tokens.filter(target => !(target in inDepends));
+				return extraDepends;
+			}
 		}
 
 		//The actual build task:
@@ -269,12 +339,10 @@ function init_maek() {
 			await updateTargets(depends, `${task.label}`);
 			//make object file:
 			delete hashCache[objFile];
-			await fsPromises.mkdir(path.dirname(objFile), {recursive:true});
-			await runCommand(objCommand, `${task.label}: compile`);
-			//make dependencies file: (NOTE: could do with same compile line)
 			delete hashCache[depsFile];
-			await fsPromises.mkdir(path.dirname(depsFile), {recursive:true});
-			await runCommand(depsCommand,`${task.label}: prerequisites`);
+			await fsPromises.mkdir(path.dirname(objFile), { recursive: true });
+			await fsPromises.mkdir(path.dirname(depsFile), { recursive: true });
+			await runCommand(command, `${task.label}: compile + prerequisites`);
 			//read extra dependencies and make sure they aren't targets of other rules:
 			const extraDepends = await loadDeps();
 			assertNontargets(extraDepends, `${task.label}`);
@@ -288,8 +356,8 @@ function init_maek() {
 			const extraDepends = await loadDeps();
 			assertNontargets(extraDepends, `${task.label}`);
 			return [
-				objCommand, depsCommand,
-				...(await hashFiles([objFile, depsFile, ...depends, ...extraDepends]))
+				command,
+				...(await hashFiles([await findExe(command), objFile, depsFile, ...depends, ...extraDepends]))
 			];
 		};
 
@@ -304,20 +372,19 @@ function init_maek() {
 	//maek.LINK links an executable file from a collection of object files:
 	// objFiles is an array of object file names
 	// exeFileBase is the base name of the executable file ('.exe' will be added on windows)
-	maek.LINK = (objFiles, exeFileBase, localOptions={}) => {
+	maek.LINK = (objFiles, exeFileBase, localOptions = {}) => {
 		const options = combineOptions(localOptions);
 
 		const exeFile = exeFileBase + options.exeSuffix;
 
 		let link, linkCommand;
+		link = [...options.LINK];
 		if (OS === 'linux') {
-			link = ['g++', '-std=c++20', '-Wall', '-Werror', '-g'];
 			linkCommand = [...link, '-o', exeFile, ...objFiles, ...options.LINKLibs];
 		} else if (OS === 'macos') {
-			link = ['g++', '-std=c++20', '-Wall', '-Werror', '-g'];
 			linkCommand = [...link, '-o', exeFile, ...objFiles, ...options.LINKLibs];
 		} else {
-			throw new Error(`TODO: write LINK rule for ${OS}.`);
+			linkCommand = [...link, `/out:${exeFile}`, ...objFiles, ...options.LINKLibs];
 		}
 		const depends = [...objFiles, ...options.depends];
 
@@ -327,7 +394,7 @@ function init_maek() {
 
 			//then link:
 			delete hashCache[exeFile];
-			await fsPromises.mkdir(path.dirname(exeFile), {recursive:true});
+			await fsPromises.mkdir(path.dirname(exeFile), { recursive: true });
 			await runCommand(linkCommand, `${task.label}: link`);
 		};
 
@@ -335,7 +402,7 @@ function init_maek() {
 			await updateTargets(depends, `${task.label} (keyFn)`);
 			return [
 				linkCommand,
-				...(await hashFiles([exeFile, ...depends]))
+				...(await hashFiles([await findExe(linkCommand), exeFile, ...depends]))
 			];
 		};
 
@@ -349,11 +416,22 @@ function init_maek() {
 	//---------------------------------
 	//helper functions used by the build rules:
 
+	//says something went wrong in building -- should fail loudly:
 	class BuildError extends Error {
 		constructor(message) {
 			super(message);
 		}
 	}
+
+	//says something went wrong elsewhere and this job is getting cleaned up -- should fail quietly:
+	class Cancelled extends Error {
+		constructor() {
+			super("Cancelled all tasks.");
+		}
+	}
+
+	//when set, stop build (by, e.g., failing any remaining job() invocations):
+	let CANCEL_ALL_TASKS = false;
 
 	//updateTargets takes a list of targets and updates them as needed.
 	async function updateTargets(targets, from) {
@@ -371,8 +449,19 @@ function init_maek() {
 							if ('cachedKey' in task && 'keyFn' in task) {
 								const key = await task.keyFn();
 								if (JSON.stringify(key) === JSON.stringify(task.cachedKey)) {
-									//TODO: VERBOSE: console.log(`${task.label}: already in cache.`);
+									if (maek.VERBOSE) console.log(`${task.label}: already in cache.`);
 									return;
+								} else {
+									const a = JSON.stringify(key);
+									const b = JSON.stringify(task.cachedKey);
+									for (let i = 0; i < a.length; ++i) {
+										if (a[i] !== b[i]) {
+											const begin = Math.max(0, i - 20);
+											const end = i + 20;
+											if (maek.VERBOSE) console.log(`${task.label}: key mis-match new[${begin}:${end}] = ${a.substr(begin, end - begin)} vs old[${begin}:${end}] = ${b.substr(begin, end - begin)}`);
+											break;
+										}
+									}
 								}
 							}
 							//on cache miss, run task:
@@ -385,17 +474,26 @@ function init_maek() {
 							if (e instanceof BuildError) {
 								console.error(`!!! FAILED [${task.label}] ${e.message}`);
 								task.failed = true;
+								//if -q flag is set, immediately cancel all jobs:
+								if (maek.QUIT_EAGERLY) {
+									CANCEL_ALL_TASKS = true; //set flag so obs cancel themselves
+								}
+							} else if (maek.QUIT_EAGERLY && e instanceof Cancelled) {
+								//if this failed because a component job was cancelled, make a note:
+								task.failed = true;
+								if (maek.VERBOSE) console.error(`CANCELED [${task.label}]`);
 							} else {
+								//don't expect any other exceptions, but if they do arise, re-throw 'em:
 								throw e;
 							}
 						}
 					})();
 				}
 				pending.push(task.pending);
-			//otherwise, if target is abstract, complain because it isn't known:
+				//otherwise, if target is abstract, complain because it isn't known:
 			} else if (target[0] === ':') {
 				throw new BuildError(`Target '${target}' (requested by ${from}) is abstract but doesn't have a task.`);
-			//otherwise, target is a file, so check that it exists:
+				//otherwise, target is a file, so check that it exists:
 			} else {
 				pending.push(
 					fsPromises.access(target, fs.constants.R_OK).catch((e) => {
@@ -407,6 +505,9 @@ function init_maek() {
 
 		//resolve all the build/check tasks before returning:
 		await Promise.all(pending);
+
+		//if the CANCEL_ALL_TASKS flag is set, don't report further errors, just abort:
+		if (CANCEL_ALL_TASKS) throw new Cancelled();
 
 		//check for any build failures:
 		for (const target of targets) {
@@ -428,11 +529,12 @@ function init_maek() {
 
 		//helper that runs a job on the pending queue:
 		async function schedule() {
-			if (job.active < JOBS && job.pending.length) {
+			if (job.active < maek.JOBS && job.pending.length) {
 				job.active += 1;
 				//DEBUG: console.log(`[${job.active}/${JOBS} active, ${job.pending.length} pending]`);
 				const next = job.pending.shift();
 				try {
+					if (CANCEL_ALL_TASKS) throw new Cancelled();
 					next.resolve(await next.jobFn());
 				} catch (e) {
 					next.reject(e);
@@ -447,8 +549,31 @@ function init_maek() {
 
 		//throw job onto pending queue:
 		return new Promise((resolve, reject) => {
-			job.pending.push({jobFn, resolve, reject});
+			job.pending.push({ jobFn, resolve, reject });
 		});
+	}
+
+	//findExe looks up a command in the PATH (so, e.g., one can hash compiler binaries)
+	async function findExe(command) {
+		const osPath = require('path');
+		let PATH;
+		if (OS === 'windows') {
+			PATH = process.env.PATH.split(';');
+		} else {
+			PATH = process.env.PATH.split(':');
+		}
+		for (const prefix of PATH) {
+			const exe = osPath.resolve(prefix, command[0]);
+			try {
+				await fsPromises.access(exe, fs.constants.X_OK);
+				return exe;
+			} catch (e) {
+				if (e.code === 'ENOENT') continue;
+				else throw e;
+			}
+		}
+		throw new BuildError(`Couldn't find file for command '${command[0]}'`);
+		return "?";
 	}
 
 	//runCommand runs a command:
@@ -463,15 +588,15 @@ function init_maek() {
 			for (const token of command) {
 				if (prettyCommand !== '') prettyCommand += ' ';
 				if (/[ \t\n!"'$&()*,;<>?[\\\]^`{|}~]/.test(token)
-				 || token[0] === '='
-				 || token[0] === '#') {
+					|| token[0] === '='
+					|| token[0] === '#') {
 					//special characters => need to quote:
 					prettyCommand += "'" + token.replace(/'/g, "'\\''") + "'";
 				} else {
 					prettyCommand += token;
 				}
 			}
-			//console.log('   ' + prettyCommand);
+			console.log('   ' + prettyCommand);
 
 			//actually run the command:
 			const child_process = require('child_process');
@@ -479,8 +604,8 @@ function init_maek() {
 			//package as a promise and await it finishing:
 			await new Promise((resolve, reject) => {
 				const proc = child_process.spawn(command[0], command.slice(1), {
-					shell:false,
-					stdio:['ignore', 'inherit', 'inherit']
+					shell: false,
+					stdio: ['ignore', 'inherit', 'inherit']
 				});
 				proc.on('exit', (code, signal) => {
 					if (code !== 0) {
@@ -530,6 +655,9 @@ function init_maek() {
 				fs.readFile(file, (err, data) => {
 					if (err) {
 						//if failed to read file, report hash as 'x':
+						if (err.code != "ENOENT") {
+							console.warn(`Failed to hash ${file} because of unexpected error ${err}`); //DEBUG
+						}
 						resolve(`${file}:x`);
 					} else {
 						//otherwise, report base64-encoded md5sum of file data:
@@ -545,14 +673,25 @@ function init_maek() {
 		}
 
 		//get all hashes:
-		return await Promise.all(files.map(hashFile));
+		if (OS === 'windows') {
+			//work in serial since otherwise windows can run out of file descriptors:
+			const hashes = [];
+			for (let file of files) {
+				hashes.push(await hashFile(file));
+			}
+			return hashes;
+		} else {
+			return await Promise.all(files.map(hashFile));
+		}
 	}
 
 	//---------------------------------
 	//Public Interface:
 
 	maek.update = async (targets) => {
-		console.log(` -- Maek v0.1 on ${OS} with ${JOBS} max jobs updating '${targets.join("', '")}'...`);
+		const performance = require('perf_hooks').performance;
+		const before = performance.now();
+		console.log(` -- Maek v0.1 on ${OS} with ${maek.JOBS} max jobs updating '${targets.join("', '")}'...`);
 
 		//clean up any stale cachedKey values:
 		for (const target of Object.keys(maek.tasks)) {
@@ -560,7 +699,7 @@ function init_maek() {
 		}
 		//load cachedKey values from cache file:
 		try {
-			const cache = JSON.parse(fs.readFileSync(CACHE_FILE, {encoding:'utf8'}));
+			const cache = JSON.parse(fs.readFileSync(CACHE_FILE, { encoding: 'utf8' }));
 			let assigned = 0;
 			let removed = 0;
 			for (const target of Object.keys(cache)) {
@@ -571,11 +710,11 @@ function init_maek() {
 					removed += 1;
 				}
 			}
-			console.log(` -- Loaded cache from '${CACHE_FILE}'; assigned ${assigned} targets and removed ${removed} stale entries.`);
+			if (maek.VERBOSE) console.log(` -- Loaded cache from '${CACHE_FILE}'; assigned ${assigned} targets and removed ${removed} stale entries.`);
 		} catch (e) {
-			console.log(` --  No cache loaded; starting fresh.`);
+			if (maek.VERBOSE) console.log(` --  No cache loaded; starting fresh.`);
 			if (e.code !== 'ENOENT') {
-				console.warn(`By the way, the reason the loading failed was the following unexpected error:`,e);
+				console.warn(`By the way, the reason the loading failed was the following unexpected error:`, e);
 			}
 		}
 
@@ -583,10 +722,14 @@ function init_maek() {
 		let failed = false;
 		try {
 			await updateTargets(targets, 'user');
-			console.log(` -- SUCCESS: Targets are now up to date.`);
+			const after = performance.now();
+			console.log(` -- SUCCESS: Target(s) '${targets.join("', '")}' brought up to date in ${((after - before) / 1000.0).toFixed(3)} seconds.`);
 		} catch (e) {
 			if (e instanceof BuildError) {
 				console.error(` -- FAILED: ${e.message}`);
+				process.exitCode = 1;
+			} else if (e instanceof Cancelled) {
+				console.error(` -- CANCELLED`);
 				process.exitCode = 1;
 			} else {
 				throw e;
@@ -602,11 +745,50 @@ function init_maek() {
 				stored += 1;
 			}
 		}
-		console.log(` -- Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
-		fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), {encoding:'utf8'});
-	
-		console.log(` -- hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
+		if (maek.VERBOSE) console.log(` -- Writing cache with ${stored} entries to '${CACHE_FILE}'...`);
+		fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), { encoding: 'utf8' });
+
+		if (maek.VERBOSE) console.log(` -- hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
 	};
+
+	//automatically call 'update' once the main body of the script has finished running:
+	process.nextTick(() => {
+		//parse the command line:
+		let targets = [];
+		for (let argi = 2; argi < process.argv.length; ++argi) {
+			const arg = process.argv[argi];
+			if (arg === '--') { //-- target target ...
+				//the rest of the command line is targets:
+				targets.push(...process.argv.slice(argi + 1));
+				console.log(`Added targets ${process.argv.slice(argi + 1)}.`);
+				break;
+			} else if (/^-j[\d+]$/.test(arg)) { //-jN
+				//set max jobs
+				maek.JOBS = parseInt(arg.substr(2));
+				console.log(`Set JOBS to ${maek.JOBS}.`);
+			} else if (arg === '-v') {
+				//set verbose output
+				maek.VERBOSE = true;
+			} else if (arg === '-q') {
+				//set quit on on first error:
+				maek.QUIT_EAGERLY = true;
+			} else if (arg.startsWith('-')) { //unrecognized option
+				console.error(`Unrecognized option '${arg}'.`);
+				process.exit(1);
+			} else if (!arg.startsWith('-')) { //a target name
+				console.log(`Added target ${arg}.`);
+				targets.push(arg);
+			}
+		}
+		if (targets.length !== 0) {
+			maek.TARGETS = targets;
+		}
+		if (maek.TARGETS.length === 0) {
+			console.warn("No targets specified on command line and no default targets.");
+		}
+
+		maek.update(maek.TARGETS);
+	});
 
 	return maek;
 }
