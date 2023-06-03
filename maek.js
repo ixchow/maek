@@ -32,21 +32,8 @@
 //  - task.depends is an array of targets whose tasks should run before
 //  - task.label is a human-readable name displayed for the task
 
-// - - - - - - - -
-// Rules.
-//  helper functions that make it easy to specify tasks.
-
-//[objFile =] CPP(cppFile [, objFileBase] [, options])
-// -- compiles a c++ file:
-// cppFile: name of c++ file to compile
-// objFileBase (optional): base name object file to produce (if not supplied, set to options.objDir + '/' + cppFile without the extension)
-//returns objFile: objFileBase + a platform-dependant suffix ('.o' or '.obj')
-
-//[exeFile =] LINK(objFiles, exeFileBase, [, options])
-// -- links an array of objects into an executable:
-// objFiles: array of objects to link
-// exeFileBase: name of executable file to produce
-//returns exeFile: exeFileBase + a platform-dependant suffix (e.g., '.exe' on windows)
+// 'Rules' are helper functions that specify tasks.
+//   see the 'RULES' section below.
 
 //-----------------------------------------
 
@@ -148,7 +135,9 @@ function combineOptions(localOptions) {
 //tasks is a map from targets -> tasks:
 maek.tasks = {};
 
-//"RULES" are helper functions that fill in the task list:
+//-----------------------------------------
+//RULES.
+// helper functions that specify tasks:
 
 //COPY adds a task that copies a file:
 maek.COPY = (srcFile, dstFile) => {
