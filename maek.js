@@ -614,18 +614,41 @@ maek.update = async (targets) => {
 	await new Promise((resolve,reject) => {
 		function pollTasks() {
 			//if can run something now, do so:
-			if (running.length < maek.JOBS && !CANCEL_ALL_TASKS && ready.length > 0) {
+			while (running.length < maek.JOBS && !CANCEL_ALL_TASKS && ready.length > 0) {
 				launch(ready.shift());
 			}
 			//if can run something eventually, keep waiting:
 			if (running.length > 0 || (!CANCEL_ALL_TASKS && ready.length > 0)) {
-				setImmediate(pollTasks);
+				setTimeout(pollTasks, 10);
 			} else {
 				resolve(); //otherwise, finish
 			}
 		}
 		setImmediate(pollTasks);
 	});
+	
+	/*
+	let sleeping = [];
+	async function worker() {
+		while (!CANCEL_ALL_TASKS && (ready.length > 0 || running.length > 0)) {
+			if (ready.length > 0) {
+				//something is ready? launch it:
+				await launch(ready.shift());
+				//and wake up anything waiting:
+				sleeping.forEach( (alarm) => alarm() );
+				sleeping.splice(sleeping.length);
+			} else {
+				//nothing ready but something running: wait
+				await new Promise((resolve) => sleeping.push(resolve));
+			}
+		}
+	}
+	let workers = [];
+	for (let i = 0; i < maek.JOBS; ++i) {
+		workers.push(worker());
+	}
+	await Promise.allSettled(workers);
+	*/
 
 	//confirm that nothing was left hanging (dependency loop!):
 	let failed = false;
@@ -675,7 +698,7 @@ process.nextTick(() => {
 			targets.push(...process.argv.slice(argi + 1));
 			console.log(`Added targets ${process.argv.slice(argi + 1)}.`);
 			break;
-		} else if (/^-j[\d+]$/.test(arg)) { //-jN
+		} else if (/^-j[\d+]+$/.test(arg)) { //-jN
 			//set max jobs
 			maek.JOBS = parseInt(arg.substr(2));
 			console.log(`Set JOBS to ${maek.JOBS}.`);
@@ -700,6 +723,7 @@ process.nextTick(() => {
 		console.warn("No targets specified on command line and no default targets.");
 	}
 
-	const success = maek.update(maek.TARGETS);
-	process.exitCode = (success ? 0 : 1);
+	maek.update(maek.TARGETS).then((success) => {
+		process.exitCode = (success ? 0 : 1);
+	});
 });
