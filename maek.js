@@ -1,3 +1,4 @@
+"use strict";
 //Maek - a simple build system
 
 // - - - - - - - -
@@ -51,7 +52,7 @@ console.log(`Building in ${TOP}.`);
 process.chdir(TOP);
 
 //make it slightly more idiomatic to export:
-maek = module.exports;
+const maek = module.exports;
 
 //-----------------------------------------
 //Constants:
@@ -306,7 +307,39 @@ class BuildError extends Error {
 	}
 }
 
-let runCache = {}; //TODO: load!
+let cache = {};
+
+function loadCache() {
+	try {
+		const loaded = JSON.parse(fs.readFileSync(maek.CACHE_FILE, { encoding: 'utf8' }));
+		let assigned = 0;
+		let removed = 0;
+		for (const command of Object.keys(loaded)) {
+			//cache will have a 'files' and a 'hashes' line
+			if ('files' in loaded[command] && 'hashes' in loaded[command]) {
+				cache[command] = {
+					files:loaded[command].files,
+					hashes:loaded[command].hashes
+				};
+				assigned += 1;
+			} else {
+				removed += 1;
+			}
+		}
+		if (maek.VERBOSE) console.log(` -- Loaded cache from '${maek.CACHE_FILE}'; had ${assigned} valid entries and ${removed} invalid ones.`);
+	} catch (e) {
+		if (maek.VERBOSE) console.log(` --  No cache loaded; starting fresh.`);
+		if (e.code !== 'ENOENT') {
+			console.warn(`Cache loading failed for unexpected reason:`, e);
+		}
+	}
+}
+
+function saveCache() {
+	if (maek.VERBOSE) console.log(` -- Writing cache with ${Object.keys(cache).length} entries to '${maek.CACHE_FILE}'...`);
+	fs.writeFileSync(maek.CACHE_FILE, JSON.stringify(cache), { encoding: 'utf8' });
+}
+
 let runTime = 0.0;
 
 //runs a shell command (presented as an array)
@@ -326,26 +359,21 @@ async function run(command, message, cacheInfoFn) {
 	}
 
 	//check for existing cache entry:
+	let extra = ''; //extra message
 	if (cacheKey in cache) {
 		const cached = cache[cacheKey].hashes;
 		const current = await hashFiles([exe, ...cache[cacheKey].files]);
 		if (JSON.stringify(current) === JSON.stringify(cached)) {
-			if (maek.VERBOSE) console.log(`\x1b[90m${message} (cached)\x1b[0m`);
-
+			if (maek.VERBOSE) console.log(`\x1b[33m${message} [cached]\x1b[0m`);
 			return;
 		} else {
-			if (maek.VERBOSE) {
-				console.log(`${message} -- cache miss!`);
-				console.log(cached);
-				console.log(current);
-				//TODO: print mis-matching file?
-			}
+			if (maek.VERBOSE) extra = ` \x1b[33m[cache miss!]\x1b[0m`;
 		}
 	}
 
 
 	if (typeof message !== 'undefined') {
-		console.log('\x1b[90m' + message + '\x1b[0m');
+		console.log(`\x1b[90m${message}\x1b[0m${extra}`);
 	}
 
 	//print a command in a way that can be copied to a shell to run:
@@ -454,12 +482,9 @@ async function hashFiles(files) {
 	return hashes;
 }
 
-let findExeTime = 0.0;
-
 //find an executable in the system path
 // (used by run to figure out what to hash)
 async function findExe(command) {
-	const before = performance.now();
 	const osPath = require('path');
 	let PATH;
 	if (maek.OS === 'windows') {
@@ -471,7 +496,6 @@ async function findExe(command) {
 		const exe = osPath.resolve(prefix, command[0]);
 		try {
 			await fsPromises.access(exe, fs.constants.X_OK);
-			findExeTime += performance.now() - before;
 			return exe;
 		} catch (e) {
 			if (e.code === 'ENOENT') continue;
@@ -482,38 +506,16 @@ async function findExe(command) {
 	return "?";
 }
 
-let idleTime = 0.0;
-
 maek.update = async (targets) => {
 	const before = performance.now();
 	console.log(` -- Maek v0.2 on ${maek.OS} with ${maek.JOBS} max jobs updating '${targets.join("', '")}'...`);
 
-	//load cache for run():
-	try {
-		cache = {}; //empty cache
-		const loaded = JSON.parse(fs.readFileSync(maek.CACHE_FILE, { encoding: 'utf8' }));
-		let assigned = 0;
-		let removed = 0;
-		for (const command of Object.keys(loaded)) {
-			//cache will have a 'files' and a 'hashes' line
-			if ('files' in loaded[command] && 'hashes' in loaded[command]) {
-				cache[command] = {
-					files:loaded[command].files,
-					hashes:loaded[command].hashes
-				};
-				assigned += 1;
-			} else {
-				removed += 1;
-			}
-		}
-		if (maek.VERBOSE) console.log(` -- Loaded cache from '${maek.CACHE_FILE}'; had ${assigned} valid entries and ${removed} invalid ones.`);
-	} catch (e) {
-		if (maek.VERBOSE) console.log(` --  No cache loaded; starting fresh.`);
-		if (e.code !== 'ENOENT') {
-			console.warn(`By the way, the reason the loading failed was the following unexpected error:`, e);
-		}
-	}
-
+	loadCache();
+	process.on('SIGINT', () => {
+		console.log(`\x1b[91m!!! FAILED: interrupted\x1b[0m`);
+		saveCache();
+		process.exit(1);
+	}); //allow saving cache on abort
 
 	const tasks = maek.tasks;
 
@@ -570,15 +572,18 @@ maek.update = async (targets) => {
 	let CANCEL_ALL_TASKS = false; //skip remaining tasks?
 
 	async function launch(task) {
-		if (maek.VERBOSE) console.log(`-- launching ${task.label}`);
 		running.push(task);
+		let failedDepends = [];
 		for (const depend of task.depends) {
 			if (tasks[depend].failed) {
-				console.error(`!!! FAILED [${task.label}] because ${tasks[depend].label} failed.`); //maybe
-				task.failed = true;
+				failedDepends.push(depend);
 			} else {
 				console.assert(tasks[depend].finished, "all depends should be failed or finished");
 			}
+		}
+		if (failedDepends.length) {
+			task.failed = true;
+			if (maek.VERBOSE) console.error(`!!! SKIPPED [${task.label}] because target(s) ${failedDepends.join(', ')} failed.`);
 		}
 		try {
 			if (!task.failed) {
@@ -587,7 +592,7 @@ maek.update = async (targets) => {
 			}
 		} catch (e) {
 			if (e instanceof BuildError) {
-				console.error(`!!! FAILED [${task.label}] ${e.message}`);
+				console.error(`\x1b[91m!!! FAILED [${task.label}] ${e.message}\x1b[0m`);
 				task.failed = true;
 				//if -q flag is set, immediately cancel all jobs:
 				if (maek.QUIT_EAGERLY) {
@@ -614,7 +619,6 @@ maek.update = async (targets) => {
 		let i = running.indexOf(task);
 		console.assert(i !== -1, "running tasks must exist within running list");
 		running.splice(i,1);
-		if (maek.VERBOSE) console.log(`-- ${task.label} finished`);
 	}
 
 	//ready up anything that can be:
@@ -626,23 +630,10 @@ maek.update = async (targets) => {
 
 	//launch tasks until no more can be launched:
 	await new Promise((resolve,reject) => {
-		let before = performance.now();
-		let prevIdle = 0;
 		function pollTasks() {
-			//record time on idle job threads since last poll:
-			let after = performance.now();
-			idleTime += (maek.JOBS - running.length) * (after - before);
-			before = after;
 			//if can run something now, do so:
 			while (running.length < maek.JOBS && !CANCEL_ALL_TASKS && ready.length > 0) {
-				//launch(ready.shift());
-				//TEST: randomized launch order:
-				launch(...ready.splice(Math.floor(Math.random() * ready.length), 1));
-			}
-			let idle = maek.JOBS - running.length;
-			if (idle != prevIdle) {
-				if (maek.VERBOSE) console.log(`\x1b[35m-- ${idle} idle jobs\x1b[0m`);
-				prevIdle = idle;
+				launch(ready.shift());
 			}
 			//if can run something eventually, keep waiting:
 			if (running.length > 0 || (!CANCEL_ALL_TASKS && ready.length > 0)) {
@@ -672,27 +663,24 @@ maek.update = async (targets) => {
 	} else {
 		if (skipped.length) {
 			if (CANCEL_ALL_TASKS) {
-				console.log(`--- FAILED: skipped ${skipped.length} tasks because of failure above.)`);
+				console.log(`!!! SKIPPED ${skipped.length} tasks because of failure above.`);
 			} else {
-				console.log(`--- FAILED: tasks ${skipped.join(', ')} were never run (circular dependancy).`);
+				console.log(`\x1b[91m!!! FAILED: tasks ${skipped.join(', ')} were never run (circular dependancy).\x1b[0m`);
 			}
 		} else {
-			console.log(`--- FAILED: see error(s) above.`);
+			console.log(`\x1b[91m!!! FAILED: see error(s) above.\x1b[0m`);
 		}
 	}
 
 	//store cache to disk:
-	if (maek.VERBOSE) console.log(` -- Writing cache with ${Object.keys(cache).length} entries to '${maek.CACHE_FILE}'...`);
-	fs.writeFileSync(maek.CACHE_FILE, JSON.stringify(cache), { encoding: 'utf8' });
+	saveCache();
 
 	if (maek.VERBOSE) {
 		function t(ms) { return (ms / 1000.0).toFixed(3); }
-		console.log(` -- Performance metrics:`);
-		console.log(` .. hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
-		console.log(` .. hashFiles spent ${t(hashLoadTime)} seconds loading and ${t(hashComputeTime)} hashing.`);
-		console.log(` .. findExe spent ${t(findExeTime)} seconds finding executables.`);
-		console.log(` .. run spent ${t(runTime)} seconds running commands.`);
-		console.log(` .. update had ${t(idleTime)} seconds of idle jobs.`);
+		console.log(`\x1b[35m -- Performance metrics:\x1b[0m`);
+		console.log(`\x1b[35m  . hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.\x1b[0m`);
+		console.log(`\x1b[35m  . hashFiles spent ${t(hashLoadTime)} seconds loading and ${t(hashComputeTime)} hashing.\x1b[0m`);
+		console.log(`\x1b[35m  . run spent ${t(runTime)} seconds running commands.\x1b[0m`);
 	}
 
 	return !failed;
@@ -713,12 +701,10 @@ process.nextTick(() => {
 		if (arg === '--') { //-- target target ...
 			//the rest of the command line is targets:
 			targets.push(...process.argv.slice(argi + 1));
-			console.log(`Added targets ${process.argv.slice(argi + 1)}.`);
 			break;
 		} else if (/^-j[\d+]+$/.test(arg)) { //-jN
 			//set max jobs
 			maek.JOBS = parseInt(arg.substr(2));
-			console.log(`Set JOBS to ${maek.JOBS}.`);
 		} else if (arg === '-v') {
 			//set verbose output
 			maek.VERBOSE = true;
