@@ -41,6 +41,7 @@
 const path = require('path').posix; //NOTE: expect posix-style paths even on windows
 const fsPromises = require('fs/promises');
 const fs = require('fs');
+const performance = require('perf_hooks').performance;
 const child_process = require('child_process');
 
 //make it so that all paths/commands are relative to the file that included maek.mjs:
@@ -306,6 +307,7 @@ class BuildError extends Error {
 }
 
 let runCache = {}; //TODO: load!
+let runTime = 0.0;
 
 //runs a shell command (presented as an array)
 // 'message' will be displayed above the command
@@ -362,6 +364,7 @@ async function run(command, message, cacheInfoFn) {
 	console.log('   ' + prettyCommand);
 
 	//package as a promise and await it finishing:
+	const before = performance.now();
 	await new Promise((resolve, reject) => {
 		const proc = child_process.spawn(command[0], command.slice(1), {
 			shell: false,
@@ -379,6 +382,7 @@ async function run(command, message, cacheInfoFn) {
 			reject(new BuildError(`${err.message} from:\n    ${prettyCommand}`));
 		});
 	});
+	runTime += performance.now() - before;
 
 	//store result in cache:
 	if (cacheInfoFn) {
@@ -399,9 +403,10 @@ async function run(command, message, cacheInfoFn) {
 
 }
 
-
 let hashCacheHits = 0;
 let hashCache = {};
+let hashLoadTime = 0.0;
+let hashComputeTime = 0.0;
 
 //hash a list of files and return a list of strings describing said hashes (or 'x' on missing file):
 async function hashFiles(files) {
@@ -417,7 +422,9 @@ async function hashFiles(files) {
 		//would likely be more efficient to use a pipe with large files,
 		//but this code is a bit more readable:
 		const hash = await new Promise((resolve, reject) => {
+			const beforeLoad = performance.now();
 			fs.readFile(file, (err, data) => {
+				hashLoadTime += performance.now() - beforeLoad;
 				if (err) {
 					//if failed to read file, report hash as 'x':
 					if (err.code != "ENOENT") {
@@ -425,10 +432,12 @@ async function hashFiles(files) {
 					}
 					resolve(`x`);
 				} else {
+					const beforeHash = performance.now();
 					//otherwise, report base64-encoded md5sum of file data:
 					const hash = crypto.createHash('md5');
 					hash.update(data);
 					resolve(`${hash.digest('base64')}`);
+					hashComputeTime += performance.now() - beforeHash;
 				}
 			});
 		});
@@ -445,9 +454,12 @@ async function hashFiles(files) {
 	return hashes;
 }
 
+let findExeTime = 0.0;
+
 //find an executable in the system path
 // (used by run to figure out what to hash)
 async function findExe(command) {
+	const before = performance.now();
 	const osPath = require('path');
 	let PATH;
 	if (maek.OS === 'windows') {
@@ -459,6 +471,7 @@ async function findExe(command) {
 		const exe = osPath.resolve(prefix, command[0]);
 		try {
 			await fsPromises.access(exe, fs.constants.X_OK);
+			findExeTime += performance.now() - before;
 			return exe;
 		} catch (e) {
 			if (e.code === 'ENOENT') continue;
@@ -469,8 +482,9 @@ async function findExe(command) {
 	return "?";
 }
 
+let idleTime = 0.0;
+
 maek.update = async (targets) => {
-	const performance = require('perf_hooks').performance;
 	const before = performance.now();
 	console.log(` -- Maek v0.2 on ${maek.OS} with ${maek.JOBS} max jobs updating '${targets.join("', '")}'...`);
 
@@ -612,10 +626,23 @@ maek.update = async (targets) => {
 
 	//launch tasks until no more can be launched:
 	await new Promise((resolve,reject) => {
+		let before = performance.now();
+		let prevIdle = 0;
 		function pollTasks() {
+			//record time on idle job threads since last poll:
+			let after = performance.now();
+			idleTime += (maek.JOBS - running.length) * (after - before);
+			before = after;
 			//if can run something now, do so:
 			while (running.length < maek.JOBS && !CANCEL_ALL_TASKS && ready.length > 0) {
-				launch(ready.shift());
+				//launch(ready.shift());
+				//TEST: randomized launch order:
+				launch(...ready.splice(Math.floor(Math.random() * ready.length), 1));
+			}
+			let idle = maek.JOBS - running.length;
+			if (idle != prevIdle) {
+				if (maek.VERBOSE) console.log(`\x1b[35m-- ${idle} idle jobs\x1b[0m`);
+				prevIdle = idle;
 			}
 			//if can run something eventually, keep waiting:
 			if (running.length > 0 || (!CANCEL_ALL_TASKS && ready.length > 0)) {
@@ -626,7 +653,7 @@ maek.update = async (targets) => {
 		}
 		setImmediate(pollTasks);
 	});
-	
+
 	//confirm that nothing was left hanging (dependency loop!):
 	let failed = false;
 	let skipped = [];
@@ -658,7 +685,15 @@ maek.update = async (targets) => {
 	if (maek.VERBOSE) console.log(` -- Writing cache with ${Object.keys(cache).length} entries to '${maek.CACHE_FILE}'...`);
 	fs.writeFileSync(maek.CACHE_FILE, JSON.stringify(cache), { encoding: 'utf8' });
 
-	if (maek.VERBOSE) console.log(` -- hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
+	if (maek.VERBOSE) {
+		function t(ms) { return (ms / 1000.0).toFixed(3); }
+		console.log(` -- Performance metrics:`);
+		console.log(` .. hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
+		console.log(` .. hashFiles spent ${t(hashLoadTime)} seconds loading and ${t(hashComputeTime)} hashing.`);
+		console.log(` .. findExe spent ${t(findExeTime)} seconds finding executables.`);
+		console.log(` .. run spent ${t(runTime)} seconds running commands.`);
+		console.log(` .. update had ${t(idleTime)} seconds of idle jobs.`);
+	}
 
 	return !failed;
 };
@@ -666,6 +701,11 @@ maek.update = async (targets) => {
 
 //automatically call 'update' once the main body of the script has finished running:
 process.nextTick(() => {
+	if (require.main === module) {
+		console.log("ERROR: Do not run maek.js directly; instead, launch a Maekfile.js that require()'s it.");
+		process.exitCode = 1;
+		return;
+	}
 	//parse the command line:
 	let targets = [];
 	for (let argi = 2; argi < process.argv.length; ++argi) {
