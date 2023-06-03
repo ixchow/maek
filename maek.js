@@ -627,29 +627,6 @@ maek.update = async (targets) => {
 		setImmediate(pollTasks);
 	});
 	
-	/*
-	let sleeping = [];
-	async function worker() {
-		while (!CANCEL_ALL_TASKS && (ready.length > 0 || running.length > 0)) {
-			if (ready.length > 0) {
-				//something is ready? launch it:
-				await launch(ready.shift());
-				//and wake up anything waiting:
-				sleeping.forEach( (alarm) => alarm() );
-				sleeping.splice(sleeping.length);
-			} else {
-				//nothing ready but something running: wait
-				await new Promise((resolve) => sleeping.push(resolve));
-			}
-		}
-	}
-	let workers = [];
-	for (let i = 0; i < maek.JOBS; ++i) {
-		workers.push(worker());
-	}
-	await Promise.allSettled(workers);
-	*/
-
 	//confirm that nothing was left hanging (dependency loop!):
 	let failed = false;
 	let skipped = [];
