@@ -1,19 +1,54 @@
 //Maek - a simple build system
 
-//CORE IDEA:
-//Maek runs commands to build targets.
+// - - - - - - - -
+//Usage.
+//Write Maekfile.js which require('./maek.js') and invokes some rules.
+// Then run:
+//$ node Maekfile.js [-jN] [-v] [-q] [--] [target1] [target2] [...]
+//
+// Maek will [re-]build all the specified targets.
+// Results are re-used by content hash if they match "maek-cache.json"; delete that file to force a full rebuild.
+//
+//Command line options:
+//  -jN      limit on parallel jobs; defaults to number of cpu cores + 1
+//  -v       verbose output; prints more info
+//  -q       quit on first error
+//  --       optional separator between command line switches and targets (useful if you have a target named '-j1')
+//  targetN  target name. Posix-style path to a file to build, or an abstract target (word starting with ':')
+//
 
-//"targets" are either:
-// paths to files (posix-style; relative to the Maekfile)
-// abstract (strings starting with ':')
+// - - - - - - - -
+//How Maek Works:
+// Maek holds a map from 'targets' (things that can be built) to
+// 'tasks' (functions that build them). When a target is requested
+// it runs the tasks needed to build that target (including any
+// tasks needed to create targets upon which the final target depends).
 
-//targets are "up-to-date" if:
-// the "task" that produces them has run
+// 'targets' are strings that specify either:
+//  - a file on disk (via a /-separated path, relative to Maekfile.js)
+//  - an abstract target (any string that starts with ':')
 
-//"tasks" are (async) functions that make targets up-to-date
-// task.depends -- targets that must be up-to-date before task is run
-// task.label -- a short human-readable label for the task
+// 'tasks' are functions that are run to create targets:
+//  - task.depends is an array of targets whose tasks should run before
+//  - task.label is a human-readable name displayed for the task
 
+// - - - - - - - -
+// Rules.
+//  helper functions that make it easy to specify tasks.
+
+//[objFile =] CPP(cppFile [, objFileBase] [, options])
+// -- compiles a c++ file:
+// cppFile: name of c++ file to compile
+// objFileBase (optional): base name object file to produce (if not supplied, set to options.objDir + '/' + cppFile without the extension)
+//returns objFile: objFileBase + a platform-dependant suffix ('.o' or '.obj')
+
+//[exeFile =] LINK(objFiles, exeFileBase, [, options])
+// -- links an array of objects into an executable:
+// objFiles: array of objects to link
+// exeFileBase: name of executable file to produce
+//returns exeFile: exeFileBase + a platform-dependant suffix (e.g., '.exe' on windows)
+
+//-----------------------------------------
 
 //standard libraries:
 const path = require('path').posix; //NOTE: expect posix-style paths even on windows
@@ -114,6 +149,26 @@ function combineOptions(localOptions) {
 maek.tasks = {};
 
 //"RULES" are helper functions that fill in the task list:
+
+//COPY adds a task that copies a file:
+maek.COPY = (srcFile, dstFile) => {
+	if (typeof srcFile !== "string") throw new Error("COPY: from should be a single file.");
+	if (typeof dstFile !== "string") throw new Error("COPY: to should be a single file.");
+	const task = async () => {
+		try {
+			await fsPromises.mkdir(path.dirname(dstFile), { recursive: true });
+			await fsPromises.copyFile(srcFile, dstFile);
+		} catch (e) {
+			throw new BuildError(`Failed to copy '${srcFile}' to '${dstFile}': ${e}`);
+		}
+	};
+	task.depends = [srcFile];
+	task.label = `COPY ${dstFile}`;
+	maek.tasks[dstFile] = task;
+
+	return dstFile;
+};
+
 
 //maek.CPP makes an object from a c++ source file:
 // cppFile is the source file name
@@ -584,23 +639,29 @@ maek.update = async (targets) => {
 	});
 
 	//confirm that nothing was left hanging (dependency loop!):
-	let allFinished = true;
+	let failed = false;
 	let skipped = [];
 	for (const task of pending) {
 		if (!(task.finished || task.failed)) {
 			skipped.push(task.label);
 		}
 		if (!task.finished) {
-			allFinished = false;
+			failed = true;
 		}
 	}
 
-	if (skipped.length > 0) {
-		if (CANCEL_ALL_TASKS) {
-			console.log(`(NOTE: skipped ${skipped.length} tasks because of failure above.)`);
+	const after = performance.now();
+	if (!failed) {
+		console.log(` -- SUCCESS: Target(s) '${targets.join("', '")}' brought up to date in ${((after - before) / 1000.0).toFixed(3)} seconds.`);
+	} else {
+		if (skipped.length) {
+			if (CANCEL_ALL_TASKS) {
+				console.log(`--- FAILED: skipped ${skipped.length} tasks because of failure above.)`);
+			} else {
+				console.log(`--- FAILED: tasks ${skipped.join(', ')} were never run (circular dependancy).`);
+			}
 		} else {
-			console.log(`ERROR: tasks ${skipped.join(', ')} were never run (circular dependancy).`);
-			return false;
+			console.log(`--- FAILED: see error(s) above.`);
 		}
 	}
 
@@ -610,7 +671,7 @@ maek.update = async (targets) => {
 
 	if (maek.VERBOSE) console.log(` -- hashCache ended up with ${Object.keys(hashCache).length} items and handled ${hashCacheHits} hits.`);
 
-	return allFinished;
+	return !failed;
 };
 
 
@@ -650,5 +711,6 @@ process.nextTick(() => {
 		console.warn("No targets specified on command line and no default targets.");
 	}
 
-	maek.update(maek.TARGETS);
+	const success = maek.update(maek.TARGETS);
+	process.exitCode = (success ? 0 : 1);
 });
