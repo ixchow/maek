@@ -24,7 +24,7 @@ const targetText = fs.readFileSync(targetFile, {encoding: 'utf8'});
 const divider = '//' + '='.repeat(70) + '\n';
 
 const sourceSplit = sourceText.split(divider);
-const targetSplit = sourceText.split(divider);
+const targetSplit = targetText.split(divider);
 
 if (sourceSplit.length !== 3) {
 	console.error("Maekfile.js in this directory doesn't have exactly two '='*72 division comments.");
@@ -36,7 +36,7 @@ if (targetSplit.length !== 3) {
 	process.exit(1);
 }
 
-const finalText = sourceText[0] + divider + targetText[1] + divider + sourceText[2];
+const finalText = sourceSplit[0] + divider + targetSplit[1] + divider + sourceSplit[2];
 
 fs.writeFileSync(targetFile, finalText, {encoding: 'utf8'});
 

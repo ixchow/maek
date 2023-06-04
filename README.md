@@ -24,3 +24,12 @@ Build some specific targets:
 ```
 $ node Maekfile.js objs/Game.o :test
 ```
+
+## Updating Maek
+
+The script `update-Maekfile.js` can be used to replace the "build engine" part of a `Maekfile.js`:
+```
+$ node update-Maekfile.js ~/my-project/Maekfile.js
+```
+
+(It just divides `Maekfile.js` at `//===...===` lines and pastes the middle section from the target file.)
