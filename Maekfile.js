@@ -420,7 +420,7 @@ function init_maek() {
 			const {read, written} = await cacheInfoFn();
 
 			//if hashed one of the written files before, can't rely on it:
-			for (const file in written) {
+			for (const file of written) {
 				delete hashCache[file];
 			}
 
