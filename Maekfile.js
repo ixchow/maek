@@ -209,7 +209,8 @@ function init_maek() {
 			if (maek.OS === 'windows') {
 				//parse JSON-encoded dependency info from /sourceDependencies:
 				const winpath = require('path').win32;
-				let paths = JSON.parse(text).Data.Includes;
+				const parsed = JSON.parse(text);
+				let paths = [...parsed.Data.Includes, parsed.Data.Source];
 				paths = paths.map(path => winpath.relative('', path).split('\\').join('/'));
 				paths = paths.sort();
 				return paths;
