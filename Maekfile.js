@@ -52,7 +52,7 @@ function init_maek() {
 
 	//standard libraries:
 	const path = require('path').posix; //NOTE: expect posix-style paths even on windows
-	const fsPromises = require('fs/promises');
+	const fsPromises = require('fs').promises;
 	const fs = require('fs');
 	const os = require('os');
 	const performance = require('perf_hooks').performance;
@@ -193,10 +193,8 @@ function init_maek() {
 		let cc, command;
 		cc = [...options.CPP, ...options.CPPFlags];
 		if (maek.OS === 'linux') {
-			//TODO: check on linux
 			command = [...cc, '-MD', '-MT', 'x ', '-MF', depsFile, '-c', '-o', objFile, cppFile];
 		} else if (maek.OS === 'macos') {
-			//TODO: check on macos
 			command = [...cc, '-MD', '-MT', 'x ', '-MF', depsFile, '-c', '-o', objFile, cppFile];
 		} else { //windows
 			command = [...cc, '/c', `/Fo${objFile}`, '/sourceDependencies', depsFile, '/Tp', cppFile];
@@ -603,7 +601,7 @@ function init_maek() {
 					task.failed = true;
 					//if -q flag is set, immediately cancel all jobs:
 					if (maek.QUIT_EAGERLY) {
-						CANCEL_ALL_TASKS = true; //set flag so obs cancel themselves
+						CANCEL_ALL_TASKS = true; //set flag so jobs cancel themselves
 					}
 				} else {
 					//don't expect any other exceptions, but if they do arise, re-throw 'em:
