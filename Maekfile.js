@@ -494,6 +494,10 @@ function init_maek() {
 		} else {
 			PATH = process.env.PATH.split(':');
 		}
+		//handle './' or 'path/to/command' commands:
+		if (command[0].indexOf('/') !== -1) {
+			PATH = ['.'];
+		}
 		for (const prefix of PATH) {
 			const exe = osPath.resolve(prefix, command[0]);
 			try {
